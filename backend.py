@@ -1,19 +1,25 @@
-import yfinance as yf
 import requests
+import yfinance as yf
 import pandas as pd
 import datetime as dt
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
+import time
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 
-#getting historical stock prices
 start_date = "2023-01-01"
 end_date = "2025-01-01"
 tickers = ["AAPL", "GOOGL", "AMZN", "MSFT"]
 
+CITIES = {
+    "New York": {"lat": 40.7128, "lon": -74.0060},
+    "London": {"lat": 51.5072, "lon": -0.1276},
+    "Tokyo": {"lat": 35.6764, "lon": 139.6500},
+}
+#getting historical stock prices
 for ticker in tickers:
         stock_data = yf.download(ticker, start=start_date, end=end_date)
         stock_data.reset_index(inplace=True)
@@ -24,41 +30,50 @@ for ticker in tickers:
         print(f"Saved {ticker} data to {file_name}")
 
 #getting historical weather conditions
+def get_weather_data(city, lat, lon, start_date, end_date):
 
-API_KEY = "9560d0573f55dc058e549b0f9d5fed4e"
-CITIES = ["New York,US", "Tokyo,JP", "London,GB"]
-BASE_URL = "http://api.openweathermap.org/data/2.5/forecast"
+    #API URL for historical weather data
+    url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={start_date}&end_date={end_date}&hourly=temperature_2m,precipitation&timezone=GMT"
 
+    response = requests.get(url)
 
-for city in CITIES:
-    params = {
-        "q": city,
-        "appid": API_KEY,
-        "units": "metric"  # Get data in Celsius
-    }
-    response = requests.get(BASE_URL, params=params)
     if response.status_code == 200:
         data = response.json()
-        temperature_records = []
-        rainfall_records = []
+
+        if "hourly" in data and "time" in data["hourly"]:
+            timestamps = pd.to_datetime(data["hourly"]["time"], errors="coerce", utc=True)
+            temperatures = data["hourly"]["temperature_2m"]
+            precipitation = data["hourly"].get("precipitation", [0] * len(timestamps))
+
+            # Create temperature DataFrame
+            temp_df = pd.DataFrame({"Datetime": timestamps, "Temperature (°C)": temperatures})
+            temp_df["Datetime"] = pd.to_datetime(temp_df["Datetime"], utc=True)  # Ensure UTC timezone
+
+            # Create rainfall DataFrame
+            rain_df = pd.DataFrame({"Datetime": timestamps, "Rainfall (mm)": precipitation})
+            rain_df["Datetime"] = pd.to_datetime(rain_df["Datetime"], utc=True)  # Ensure UTC timezone
+
+            # Save to CSV
+            temp_filename = f"{city.replace(' ', '_').lower()}_temperature.csv"
+            rain_filename = f"{city.replace(' ', '_').lower()}_rainfall.csv"
+
+            temp_df.to_csv(temp_filename, index=False)
+            rain_df.to_csv(rain_filename, index=False)
+
+            print(f"Data saved: {temp_filename}, {rain_filename}")
+            return temp_df, rain_df
+
+        else:
+                print("No hourly data found in the response.")
+                return None, None
+        
+    else:
+        print(f" Failed to fetch weather data! Error {response.status_code}")
+        return None, None
+
     
-        for item in data["list"]:
-            timestamp = item["dt_txt"]
-            temperature = item["main"]["temp"]
-            rainfall = item.get("rain", {}).get("3h", 0)  # Rain in last 3 hours (mm)
-            
-            temperature_records.append({"Datetime": timestamp, "Temperature (°C)": temperature})
-            
-            rainfall_records.append({"Datetime": timestamp, "Rainfall (mm)": rainfall})
-
-        temp_df = pd.DataFrame(temperature_records)
-        rain_df = pd.DataFrame(rainfall_records)
-
-        temp_df['Datetime'] = pd.to_datetime(temp_df['Datetime'])
-        rain_df['Datetime'] = pd.to_datetime(rain_df['Datetime'])
-
-        temp_filename=temp_df.to_csv(f"{city.replace(',', '_').lower()}_temp.csv", index=False)
-        rain_filename= rain_df.to_csv(f"{city.replace(',', '_').lower()}_rainfall.csv", index=False)
+for city, coords in CITIES.items():
+    get_weather_data(city, coords["lat"], coords["lon"], start_date, end_date)
 
 #merging stock + weather data
 
@@ -110,7 +125,7 @@ print(f"✅ Number of features: {num_features}")  # Debugging step
 def create_sequences(data, lookback=30, close_index=0,num_features=None):
 
     if num_features is None or num_features <= 0:
-        raise ValueError("❌ num_features must be greater than 0!")
+        raise ValueError(" num_features must be greater than 0!")
 
     X, y = [], []
     for i in range(len(data) - lookback):
@@ -163,34 +178,32 @@ model_temp = build_lstm_model((X_temp.shape[1], X_temp.shape[2]))
 history_temp = model_temp.fit(X_temp, y_temp, epochs=50, batch_size=32, validation_split=0.2)
 
 # # Plot training & validation loss values for a clear visualization of how the model's performance evolves during training.
-# plt.plot(history_temp.history['loss'], label='Train Loss')
-# plt.plot(history_temp.history['val_loss'], label='Validation Loss')
-# plt.title('Model Loss')
-# plt.ylabel('Loss')
-# plt.xlabel('Epoch')
-# plt.legend(loc='upper right')
-# #plt.show()
+plt.plot(history_temp.history['loss'], label='Train Loss')
+plt.plot(history_temp.history['val_loss'], label='Validation Loss')
+plt.title('Model Loss')
+plt.ylabel('Loss')
+plt.xlabel('Epoch')
+plt.legend(loc='upper right')
+#plt.show()
 
-# # #Training RAIN Model:
-# model_rain = build_lstm_model((X_rain.shape[1], X_rain.shape[2]))
-# history_rain=model_rain.fit(X_rain, y_rain, epochs=50, batch_size=32, validation_split=0.2)
+#Training RAIN Model:
+model_rain = build_lstm_model((X_rain.shape[1], X_rain.shape[2]))
+history_rain=model_rain.fit(X_rain, y_rain, epochs=50, batch_size=32, validation_split=0.2)
 
-# # Plot training & validation loss values for a clear visualization of how the model's performance evolves during training.
-# plt.plot(history_rain.history['loss'], label='Train Loss')
-# plt.plot(history_rain.history['val_loss'], label='Validation Loss')
-# plt.title('Model Loss')
-# plt.ylabel('Loss')
-# plt.xlabel('Epoch')
-# plt.legend(loc='upper right')
-# plt.show()
-
-
+# Plot training & validation loss values for a clear visualization of how the model's performance evolves during training.
+plt.plot(history_rain.history['loss'], label='Train Loss')
+plt.plot(history_rain.history['val_loss'], label='Validation Loss')
+plt.title('Model Loss')
+plt.ylabel('Loss')
+plt.xlabel('Epoch')
+plt.legend(loc='upper right')
+plt.show()
 
 # forecasting Future stock prices with TRAIN MODEL 
 def predict_next_day(model, last_30_days, scaler,num_features):
 
     if last_30_days.shape[0] != 30:
-        print(f"❌ ERROR: Expected 30 rows, but got {last_30_days.shape[0]}.")
+        print(f" ERROR: Expected 30 rows, but got {last_30_days.shape[0]}.")
         return None
 
     last_30_days_scaled = scaler.transform(last_30_days)
